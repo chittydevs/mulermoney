@@ -4,7 +4,8 @@ import SummaryPanel from './SummaryPanel';
 import NodeDetailsPanel from './NodeDetailsPanel';
 import FraudRingTable from './FraudRingTable';
 import type { DetectionResult } from '@/lib/types';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, LogOut } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
 
 interface DashboardProps {
   result: DetectionResult;
@@ -13,6 +14,7 @@ interface DashboardProps {
 
 export default function Dashboard({ result, onReset }: DashboardProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const { signOut } = useAuth();
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -31,6 +33,10 @@ export default function Dashboard({ result, onReset }: DashboardProps) {
             </p>
           </div>
         </div>
+        <button onClick={signOut} className="flex items-center gap-1.5 text-muted-foreground transition-colors hover:text-foreground">
+          <LogOut className="h-4 w-4" />
+          <span className="text-xs">Sign Out</span>
+        </button>
       </header>
 
       {/* Main content */}
