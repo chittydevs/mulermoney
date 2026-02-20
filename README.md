@@ -1,3 +1,4 @@
+PROBLEM STATEMENT:-
 Money Muling Detection Engine
 Graph-Based Financial Crime Detection System
 RIFT 2026 – Graph Theory / Financial Crime Detection Track
@@ -66,8 +67,8 @@ Canonical grouping logic
 Deployment
 Lovable hosted web application
 
-🔍 Detection Algorithms
-1️⃣ Graph Representation
+Detection Algorithms :-
+1. Graph Representation
 Transactions are modeled as a directed graph:
 
 graph: Map<AccountID, Set<ReceiverAccountID>>
@@ -89,7 +90,7 @@ V = number of accounts
 
 E = number of transactions
 
-2️⃣ Circular Fund Routing (Cycle Detection)
+2. Circular Fund Routing (Cycle Detection)
 Detects cycles of length 3–5 using depth-limited DFS.
 
 Approach
@@ -118,7 +119,7 @@ Time Complexity:
 
 O(V + E) (bounded depth traversal)
 
-3️⃣ Smurfing Detection (Fan-In / Fan-Out)
+3. Smurfing Detection (Fan-In / Fan-Out)
 Fan-In Pattern
 If ≥ 10 unique senders transfer funds to one receiver within 72 hours.
 
@@ -140,7 +141,7 @@ Time Complexity:
 
 O(E log E) (time-window grouping)
 
-4️⃣ Layered Shell Network Detection
+4. Layered Shell Network Detection
 Detects laundering chains where:
 
 Path length ≥ 3
@@ -266,7 +267,7 @@ Account drill-down analysis
 
 Downloadable JSON output
 
-📖 Usage Instructions
+* Usage Instructions
 Upload CSV file on homepage
 
 System parses transactions
