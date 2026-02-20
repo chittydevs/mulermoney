@@ -12,7 +12,7 @@ function nextRingId(): string {
   return `RING_${String(ringCounter).padStart(3, '0')}`;
 }
 
-// ─── CYCLE DETECTION (DFS-based, length 3-5) ───
+// ─── CYCLE DETECTION (Iterative DFS, length 3-5) ───
 
 export function detectCycles(graph: TransactionGraph): FraudRing[] {
   const rings: FraudRing[] = [];
@@ -20,81 +20,93 @@ export function detectCycles(graph: TransactionGraph): FraudRing[] {
   const nodeIds = Array.from(graph.nodes.keys());
 
   for (const startNode of nodeIds) {
-    const visited = new Set<string>();
-    const path: string[] = [];
-    dfs(graph, startNode, startNode, path, visited, allCycles, 5);
+    // Iterative DFS with explicit stack
+    const stack: { current: string; path: string[]; visited: Set<string> }[] = [];
+    stack.push({ current: startNode, path: [], visited: new Set() });
+
+    while (stack.length > 0) {
+      const { current, path, visited } = stack.pop()!;
+      
+      if (path.length > 5) continue;
+
+      const newPath = [...path, current];
+      const newVisited = new Set(visited);
+      newVisited.add(current);
+
+      for (const neighbor of graph.getNeighbors(current)) {
+        if (neighbor === startNode && newPath.length >= 3) {
+          allCycles.push([...newPath]);
+        } else if (!newVisited.has(neighbor) && newPath.length < 5) {
+          stack.push({ current: neighbor, path: newPath, visited: newVisited });
+        }
+      }
+    }
   }
 
-  // Deduplicate cycles (normalize by sorting)
+  // Deduplicate: canonical key = sorted members
   const seen = new Set<string>();
+  const candidateCycles: { key: string; cycle: string[] }[] = [];
+
   for (const cycle of allCycles) {
-    const key = normalizeCycle(cycle);
+    const sorted = [...cycle].sort();
+    const key = sorted.join(',');
     if (!seen.has(key)) {
       seen.add(key);
-      const ringId = nextRingId();
-      const riskScore = computeCycleRisk(graph, cycle);
-      rings.push({
-        ring_id: ringId,
-        member_accounts: [...cycle],
-        pattern_type: `cycle_length_${cycle.length}`,
-        risk_score: Math.round(riskScore * 10) / 10,
-      });
+      candidateCycles.push({ key, cycle: sorted });
+    }
+  }
 
-      // Mark nodes
-      for (const nodeId of cycle) {
-        const node = graph.nodes.get(nodeId)!;
-        node.isSuspicious = true;
-        node.detectedPatterns.push(`cycle_length_${cycle.length}`);
-        node.ringIds.push(ringId);
+  // Remove subset cycles: if cycle A members ⊂ cycle B members, discard A
+  const memberSets = candidateCycles.map(c => new Set(c.cycle));
+  const isSubset = new Array(candidateCycles.length).fill(false);
+
+  for (let i = 0; i < candidateCycles.length; i++) {
+    if (isSubset[i]) continue;
+    for (let j = 0; j < candidateCycles.length; j++) {
+      if (i === j || isSubset[j]) continue;
+      if (memberSets[i].size < memberSets[j].size) {
+        // Check if i is subset of j
+        let allIn = true;
+        for (const m of memberSets[i]) {
+          if (!memberSets[j].has(m)) { allIn = false; break; }
+        }
+        if (allIn) isSubset[i] = true;
       }
+    }
+  }
+
+  for (let i = 0; i < candidateCycles.length; i++) {
+    if (isSubset[i]) continue;
+    const cycle = candidateCycles[i].cycle;
+    const ringId = nextRingId();
+    const riskScore = computeCycleRisk(graph, cycle);
+    
+    rings.push({
+      ring_id: ringId,
+      member_accounts: cycle,
+      pattern_type: `cycle_length_${cycle.length}`,
+      risk_score: Math.round(riskScore * 10) / 10,
+    });
+
+    for (const nodeId of cycle) {
+      const node = graph.nodes.get(nodeId)!;
+      node.isSuspicious = true;
+      node.detectedPatterns.push(`cycle_length_${cycle.length}`);
+      node.ringIds.push(ringId);
     }
   }
 
   return rings;
 }
 
-function dfs(
-  graph: TransactionGraph,
-  start: string,
-  current: string,
-  path: string[],
-  visited: Set<string>,
-  results: string[][],
-  maxLen: number
-) {
-  if (path.length > maxLen) return;
-
-  path.push(current);
-  visited.add(current);
-
-  for (const neighbor of graph.getNeighbors(current)) {
-    if (neighbor === start && path.length >= 3) {
-      results.push([...path]);
-    } else if (!visited.has(neighbor) && path.length < maxLen) {
-      dfs(graph, start, neighbor, path, visited, results, maxLen);
-    }
-  }
-
-  path.pop();
-  visited.delete(current);
-}
-
-function normalizeCycle(cycle: string[]): string {
-  const rotations: string[] = [];
-  for (let i = 0; i < cycle.length; i++) {
-    const rotated = [...cycle.slice(i), ...cycle.slice(0, i)];
-    rotations.push(rotated.join('->'));
-  }
-  return rotations.sort()[0];
-}
-
 function computeCycleRisk(graph: TransactionGraph, cycle: string[]): number {
   let score = 50;
-  // Shorter cycles are more suspicious
-  if (cycle.length === 3) score += 20;
-  else if (cycle.length === 4) score += 10;
+  // Longer cycles = higher risk (layered laundering)
+  if (cycle.length === 3) score += 15;
+  else if (cycle.length === 4) score += 25;
+  else if (cycle.length === 5) score += 35;
 
-  // Check transaction velocity between cycle members
+  // Transaction velocity
   let totalTx = 0;
   for (let i = 0; i < cycle.length; i++) {
     const from = cycle[i];
@@ -102,82 +114,73 @@ function computeCycleRisk(graph: TransactionGraph, cycle: string[]): number {
     const edge = graph.edges.get(`${from}->${to}`);
     if (edge) totalTx += edge.count;
   }
-  if (totalTx > cycle.length * 2) score += 15;
-
-  // Amount consistency
-  const amounts: number[] = [];
-  for (let i = 0; i < cycle.length; i++) {
-    const from = cycle[i];
-    const to = cycle[(i + 1) % cycle.length];
-    const edge = graph.edges.get(`${from}->${to}`);
-    if (edge) amounts.push(edge.totalAmount / edge.count);
-  }
-  if (amounts.length > 1) {
-    const avg = amounts.reduce((a, b) => a + b, 0) / amounts.length;
-    const variance = amounts.reduce((s, a) => s + Math.pow(a - avg, 2), 0) / amounts.length;
-    const cv = Math.sqrt(variance) / (avg || 1);
-    if (cv < 0.3) score += 10; // Consistent amounts are more suspicious
-  }
+  if (totalTx > cycle.length * 2) score += 10;
 
   return Math.min(100, score);
 }
 
-// ─── SMURFING DETECTION (Fan-in / Fan-out) ───
+// ─── SMURFING DETECTION (Fan-in / Fan-out with 72h window) ───
 
 export function detectSmurfing(graph: TransactionGraph): FraudRing[] {
   const rings: FraudRing[] = [];
-  const WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
+  const WINDOW_MS = 72 * 60 * 60 * 1000;
   const THRESHOLD = 10;
+  const flaggedAggregators = new Set<string>(); // One ring per aggregator
 
   for (const [nodeId, node] of graph.nodes) {
-    // Fan-in: many senders -> this node within window
-    const incomingSenders = graph.getIncoming(nodeId);
-    if (incomingSenders.length >= THRESHOLD) {
-      const windows = getTemporalWindows(graph, incomingSenders, nodeId, 'incoming', WINDOW_MS);
-      for (const window of windows) {
-        if (window.senders.size >= THRESHOLD && !isLegitimate(node)) {
+    // Skip legitimate high-volume accounts
+    if (isLegitimate(node)) continue;
+
+    // Fan-in: many senders -> this node within 72h
+    if (!flaggedAggregators.has(`in_${nodeId}`)) {
+      const incomingSenders = graph.getIncoming(nodeId);
+      if (incomingSenders.length >= THRESHOLD) {
+        const windowSenders = getTemporalCounterparts(graph, incomingSenders, nodeId, 'incoming', WINDOW_MS);
+        if (windowSenders && windowSenders.size >= THRESHOLD) {
+          flaggedAggregators.add(`in_${nodeId}`);
           const ringId = nextRingId();
-          const members = [nodeId, ...Array.from(window.senders)];
+          const members = [nodeId, ...Array.from(windowSenders)].sort();
           rings.push({
             ring_id: ringId,
             member_accounts: members,
-            pattern_type: 'fan_in_smurfing',
-            risk_score: Math.round(Math.min(100, 60 + window.senders.size * 2) * 10) / 10,
+            pattern_type: 'fan_in_72h',
+            risk_score: Math.round(Math.min(100, 60 + windowSenders.size * 2) * 10) / 10,
           });
           node.isSuspicious = true;
-          node.detectedPatterns.push('fan_in_smurfing');
+          node.detectedPatterns.push('fan_in_72h');
           node.ringIds.push(ringId);
-          for (const s of window.senders) {
+          for (const s of windowSenders) {
             const sNode = graph.nodes.get(s)!;
             sNode.isSuspicious = true;
-            sNode.detectedPatterns.push('fan_in_smurfing');
+            sNode.detectedPatterns.push('fan_in_72h');
             sNode.ringIds.push(ringId);
           }
         }
       }
     }
 
-    // Fan-out: this node -> many receivers within window
-    const outgoingReceivers = graph.getNeighbors(nodeId);
-    if (outgoingReceivers.length >= THRESHOLD) {
-      const windows = getTemporalWindows(graph, outgoingReceivers, nodeId, 'outgoing', WINDOW_MS);
-      for (const window of windows) {
-        if (window.senders.size >= THRESHOLD && !isLegitimate(node)) {
+    // Fan-out: this node -> many receivers within 72h
+    if (!flaggedAggregators.has(`out_${nodeId}`)) {
+      const outgoingReceivers = graph.getNeighbors(nodeId);
+      if (outgoingReceivers.length >= THRESHOLD) {
+        const windowReceivers = getTemporalCounterparts(graph, outgoingReceivers, nodeId, 'outgoing', WINDOW_MS);
+        if (windowReceivers && windowReceivers.size >= THRESHOLD) {
+          flaggedAggregators.add(`out_${nodeId}`);
           const ringId = nextRingId();
-          const members = [nodeId, ...Array.from(window.senders)];
+          const members = [nodeId, ...Array.from(windowReceivers)].sort();
           rings.push({
             ring_id: ringId,
             member_accounts: members,
-            pattern_type: 'fan_out_smurfing',
-            risk_score: Math.round(Math.min(100, 60 + window.senders.size * 2) * 10) / 10,
+            pattern_type: 'fan_out_72h',
+            risk_score: Math.round(Math.min(100, 60 + windowReceivers.size * 2) * 10) / 10,
           });
           node.isSuspicious = true;
-          node.detectedPatterns.push('fan_out_smurfing');
+          node.detectedPatterns.push('fan_out_72h');
           node.ringIds.push(ringId);
-          for (const s of window.senders) {
+          for (const s of windowReceivers) {
             const sNode = graph.nodes.get(s)!;
             sNode.isSuspicious = true;
-            sNode.detectedPatterns.push('fan_out_smurfing');
+            sNode.detectedPatterns.push('fan_out_72h');
             sNode.ringIds.push(ringId);
           }
         }
@@ -188,17 +191,13 @@ export function detectSmurfing(graph: TransactionGraph): FraudRing[] {
   return rings;
 }
 
-interface TemporalWindow {
-  senders: Set<string>;
-}
-
-function getTemporalWindows(
+function getTemporalCounterparts(
   graph: TransactionGraph,
   counterparts: string[],
   nodeId: string,
   direction: 'incoming' | 'outgoing',
   windowMs: number
-): TemporalWindow[] {
+): Set<string> | null {
   const txs: { counterpart: string; timestamp: number }[] = [];
 
   for (const cp of counterparts) {
@@ -212,35 +211,32 @@ function getTemporalWindows(
   }
 
   txs.sort((a, b) => a.timestamp - b.timestamp);
-
-  const windows: TemporalWindow[] = [];
-  if (txs.length === 0) return windows;
+  if (txs.length === 0) return null;
 
   // Sliding window
   let start = 0;
-  const senders = new Set<string>();
+  let bestWindow: Set<string> | null = null;
+
   for (let end = 0; end < txs.length; end++) {
-    senders.add(txs[end].counterpart);
     while (txs[end].timestamp - txs[start].timestamp > windowMs) {
       start++;
     }
-    // Recompute senders in window
     const windowSenders = new Set<string>();
     for (let i = start; i <= end; i++) {
       windowSenders.add(txs[i].counterpart);
     }
     if (windowSenders.size >= 10) {
-      windows.push({ senders: windowSenders });
-      return windows; // One window is enough
+      if (!bestWindow || windowSenders.size > bestWindow.size) {
+        bestWindow = windowSenders;
+      }
     }
   }
 
-  return windows;
+  return bestWindow;
 }
 
 function isLegitimate(node: import('./types').GraphNode): boolean {
   const totalTx = node.inDegree + node.outDegree;
-  // High volume with consistent long-term activity
   if (totalTx > 100) return true;
   return false;
 }
@@ -250,10 +246,10 @@ function isLegitimate(node: import('./types').GraphNode): boolean {
 export function detectShellNetworks(graph: TransactionGraph): FraudRing[] {
   const rings: FraudRing[] = [];
   const MIN_HOPS = 3;
+  const seenChainKeys = new Set<string>();
 
   for (const [startId] of graph.nodes) {
-    const visited = new Set<string>();
-    const chains = findShellChains(graph, startId, [], visited, MIN_HOPS);
+    const chains = findShellChains(graph, startId, MIN_HOPS);
     
     for (const chain of chains) {
       const intermediates = chain.slice(1, -1);
@@ -263,10 +259,15 @@ export function detectShellNetworks(graph: TransactionGraph): FraudRing[] {
       });
 
       if (allShell && hasRapidForwarding(graph, chain)) {
+        const sorted = [...chain].sort();
+        const key = sorted.join(',');
+        if (seenChainKeys.has(key)) continue;
+        seenChainKeys.add(key);
+
         const ringId = nextRingId();
         rings.push({
           ring_id: ringId,
-          member_accounts: [...chain],
+          member_accounts: sorted,
           pattern_type: 'shell_network',
           risk_score: Math.round(Math.min(100, 55 + chain.length * 8) * 10) / 10,
         });
@@ -286,34 +287,37 @@ export function detectShellNetworks(graph: TransactionGraph): FraudRing[] {
 
 function findShellChains(
   graph: TransactionGraph,
-  current: string,
-  path: string[],
-  visited: Set<string>,
+  startId: string,
   minLen: number,
   maxLen: number = 6
 ): string[][] {
   const results: string[][] = [];
-  path.push(current);
-  visited.add(current);
+  // Iterative DFS
+  const stack: { current: string; path: string[]; visited: Set<string> }[] = [];
+  stack.push({ current: startId, path: [], visited: new Set() });
 
-  if (path.length >= minLen) {
-    results.push([...path]);
-  }
+  while (stack.length > 0) {
+    const { current, path, visited } = stack.pop()!;
+    const newPath = [...path, current];
+    const newVisited = new Set(visited);
+    newVisited.add(current);
 
-  if (path.length < maxLen) {
-    for (const neighbor of graph.getNeighbors(current)) {
-      if (!visited.has(neighbor)) {
-        const neighborTotal = graph.getTotalTransactions(neighbor);
-        // Only follow through low-activity intermediates
-        if (neighborTotal <= 3 || path.length === 0) {
-          results.push(...findShellChains(graph, neighbor, path, visited, minLen, maxLen));
+    if (newPath.length >= minLen) {
+      results.push([...newPath]);
+    }
+
+    if (newPath.length < maxLen) {
+      for (const neighbor of graph.getNeighbors(current)) {
+        if (!newVisited.has(neighbor)) {
+          const neighborTotal = graph.getTotalTransactions(neighbor);
+          if (neighborTotal <= 3 || newPath.length === 1) {
+            stack.push({ current: neighbor, path: newPath, visited: newVisited });
+          }
         }
       }
     }
   }
 
-  path.pop();
-  visited.delete(current);
   return results;
 }
 
@@ -325,7 +329,7 @@ function hasRapidForwarding(graph: TransactionGraph, chain: string[]): boolean {
       const lastIn = Math.max(...edge1.transactions.map(t => t.timestamp.getTime()));
       const firstOut = Math.min(...edge2.transactions.map(t => t.timestamp.getTime()));
       const diffHours = (firstOut - lastIn) / (1000 * 60 * 60);
-      if (diffHours < 24) return true;
+      if (diffHours < 72) return true;
     }
   }
   return false;

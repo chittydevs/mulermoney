@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { X, AlertTriangle, ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import { X, AlertTriangle, ArrowDownLeft, ArrowUpRight, Info } from 'lucide-react';
 import type { DetectionResult } from '@/lib/types';
 
 interface NodeDetailsPanelProps {
@@ -8,12 +8,41 @@ interface NodeDetailsPanelProps {
   onClose: () => void;
 }
 
+function generateWhyFlagged(account: { detected_patterns: string[]; suspicion_score: number } | undefined, node: any, rings: any[]): string[] {
+  const reasons: string[] = [];
+  if (!account) return reasons;
+
+  for (const p of account.detected_patterns) {
+    if (p.startsWith('cycle_length_')) {
+      const len = p.replace('cycle_length_', '');
+      reasons.push(`Part of circular fund routing (cycle of length ${len})`);
+    }
+    if (p === 'fan_in_72h') {
+      reasons.push(`${node.inDegree}+ incoming transfers within 72-hour window (smurfing fan-in)`);
+    }
+    if (p === 'fan_out_72h') {
+      reasons.push(`Sent funds to ${node.outDegree}+ receivers within 72-hour window (smurfing fan-out)`);
+    }
+    if (p === 'shell_network') {
+      reasons.push(`Shell intermediary in multi-hop laundering chain`);
+    }
+  }
+
+  if (rings.length > 1) {
+    reasons.push(`Member of ${rings.length} distinct fraud rings`);
+  }
+
+  return reasons;
+}
+
 export default function NodeDetailsPanel({ result, nodeId, onClose }: NodeDetailsPanelProps) {
   const node = result.graph.nodes.find(n => n.id === nodeId);
   const account = result.suspicious_accounts.find(a => a.account_id === nodeId);
   const rings = result.fraud_rings.filter(r => r.member_accounts.includes(nodeId));
 
   if (!node) return null;
+
+  const whyFlagged = generateWhyFlagged(account, node, rings);
 
   const recentTx = [...node.transactions]
     .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
@@ -55,6 +84,24 @@ export default function NodeDetailsPanel({ result, nodeId, onClose }: NodeDetail
                 <span key={p} className="rounded-sm bg-secondary px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">{p}</span>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Why Flagged */}
+        {whyFlagged.length > 0 && (
+          <div className="rounded-md border border-border bg-secondary/30 p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <Info className="h-3.5 w-3.5 text-primary" />
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Why Flagged?</span>
+            </div>
+            <ul className="space-y-1.5">
+              {whyFlagged.map((reason, i) => (
+                <li key={i} className="flex items-start gap-2">
+                  <span className="mt-0.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-danger" />
+                  <span className="text-xs text-foreground">{reason}</span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

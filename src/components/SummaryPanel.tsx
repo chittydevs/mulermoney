@@ -47,7 +47,7 @@ export default function SummaryPanel({ result, onAccountSelect }: SummaryPanelPr
         <div className="grid grid-cols-3 gap-1.5 text-center">
           {[
             { label: 'Cycles', count: result.fraud_rings.filter(r => r.pattern_type.includes('cycle')).length, color: 'text-danger' },
-            { label: 'Smurfing', count: result.fraud_rings.filter(r => r.pattern_type.includes('smurf')).length, color: 'text-accent' },
+            { label: 'Smurfing', count: result.fraud_rings.filter(r => r.pattern_type.includes('fan_in') || r.pattern_type.includes('fan_out')).length, color: 'text-accent' },
             { label: 'Shell', count: result.fraud_rings.filter(r => r.pattern_type.includes('shell')).length, color: 'text-primary' },
           ].map(d => (
             <div key={d.label} className="rounded-sm border border-border bg-card p-2">
