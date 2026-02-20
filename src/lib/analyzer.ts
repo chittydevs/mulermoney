@@ -1,7 +1,8 @@
 import type { Transaction, DetectionResult, AnalysisProgress } from './types';
 import { TransactionGraph } from './graph-engine';
 import { detectCycles, detectSmurfing, detectShellNetworks, resetRingCounter } from './detection-engine';
-import { computeSuspicionScores } from './scoring-engine';
+import { computeSuspicionScores, computeRingRiskScores } from './scoring-engine';
+import { mergeOverlappingRings } from './ring-merger';
 
 export async function analyzeTransactions(
   transactions: Transaction[],
@@ -25,21 +26,40 @@ export async function analyzeTransactions(
 
   const smurfRings = detectSmurfing(graph);
 
-  onProgress({ stage: 'Detecting shell networks...', percent: 70 });
+  onProgress({ stage: 'Detecting shell networks...', percent: 65 });
   await tick();
 
   const shellRings = detectShellNetworks(graph);
+
+  onProgress({ stage: 'Merging overlapping rings...', percent: 75 });
+  await tick();
+
+  // Merge rings with ≥70% overlap
+  const allRingsRaw = [...cycleRings, ...smurfRings, ...shellRings];
+  const mergedRings = mergeOverlappingRings(allRingsRaw);
+
+  // Re-assign ring IDs to nodes after merging
+  for (const node of graph.getNodeArray()) {
+    node.ringIds = [];
+  }
+  for (const ring of mergedRings) {
+    for (const memberId of ring.member_accounts) {
+      const node = graph.nodes.get(memberId);
+      if (node) node.ringIds.push(ring.ring_id);
+    }
+  }
 
   onProgress({ stage: 'Computing suspicion scores...', percent: 85 });
   await tick();
 
   computeSuspicionScores(graph);
 
+  // Recalculate ring risk as average of member scores
+  computeRingRiskScores(graph, mergedRings);
+
   onProgress({ stage: 'Generating results...', percent: 95 });
   await tick();
 
-  const allRings = [...cycleRings, ...smurfRings, ...shellRings];
-  
   const suspiciousAccounts = graph.getNodeArray()
     .filter(n => n.isSuspicious)
     .sort((a, b) => b.suspicionScore - a.suspicionScore)
@@ -56,11 +76,11 @@ export async function analyzeTransactions(
 
   return {
     suspicious_accounts: suspiciousAccounts,
-    fraud_rings: allRings,
+    fraud_rings: mergedRings,
     summary: {
       total_accounts_analyzed: graph.nodes.size,
       suspicious_accounts_flagged: suspiciousAccounts.length,
-      fraud_rings_detected: allRings.length,
+      fraud_rings_detected: mergedRings.length,
       processing_time_seconds: Math.round(elapsed * 10) / 10,
     },
     graph: {

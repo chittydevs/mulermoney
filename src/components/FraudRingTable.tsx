@@ -127,7 +127,7 @@ export default function FraudRingTable({ result }: FraudRingTableProps) {
                 <td className="px-4 py-2.5">
                   <span className={`rounded-sm px-2 py-0.5 font-mono text-[10px] ${
                     ring.pattern_type.includes('cycle') ? 'bg-danger/20 text-danger' :
-                    ring.pattern_type.includes('smurf') ? 'bg-accent/20 text-accent' :
+                    ring.pattern_type.includes('fan_in') || ring.pattern_type.includes('fan_out') ? 'bg-accent/20 text-accent' :
                     'bg-primary/20 text-primary'
                   }`}>
                     {ring.pattern_type}
